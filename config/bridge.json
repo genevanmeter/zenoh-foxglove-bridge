@@ -1,0 +1,11 @@
+{
+  "bind": "127.0.0.1",
+  "port": 8765,
+  "key_expr": "**",
+  "message_types": {},
+  "query_timeout_ms": 2000,
+  "retry_interval_ms": 5000,
+  "queue_capacity": 32,
+  "max_topics": 1024,
+  "max_message_bytes": 16777216
+}

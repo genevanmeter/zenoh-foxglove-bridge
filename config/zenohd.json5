@@ -1,0 +1,15 @@
+{
+  mode: "router",
+  listen: { endpoints: ["tcp/127.0.0.1:7447"] },
+  plugins: {
+    foxglove: {
+      __required__: true,
+      // Run zenohd from the repository root, or use an absolute library path.
+      __path__: "target/release/libzenoh_plugin_foxglove.so",
+      bind: "127.0.0.1",
+      port: 8765,
+      key_expr: "**",
+      message_types: {},
+    },
+  },
+}
