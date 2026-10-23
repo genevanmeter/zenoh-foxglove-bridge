@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package demo;
+
+message Reading {
+  double value = 1;
+  string label = 2;
+}

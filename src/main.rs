@@ -9,11 +9,12 @@ async fn main() -> Result<()> {
         .init();
     let mut config = BridgeConfig::default();
     let mut zenoh_config = zenoh::Config::default();
+    let mut descriptor_file = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--help" || arg == "-h" {
             println!(
-                "zenoh-foxglove-bridge [--config bridge.json] [--zenoh-config zenoh.json5]\n\nDefault: subscribe ** and serve ws://127.0.0.1:8765\nBridge settings: bind, port, key_expr, message_types, query_timeout_ms,\nretry_interval_ms, queue_capacity, max_topics, max_message_bytes."
+                "zenoh-foxglove-bridge [--config bridge.json] [--zenoh-config zenoh.json5] [--descriptor-file descriptor.bin]\n\nDefault: subscribe ** and serve ws://127.0.0.1:8765\nBridge settings: bind, port, key_expr, message_types, descriptor_file,\nquery_timeout_ms, retry_interval_ms, queue_capacity, max_topics, max_message_bytes."
             );
             return Ok(());
         }
@@ -27,8 +28,14 @@ async fn main() -> Result<()> {
                 zenoh_config =
                     zenoh::Config::from_file(args.next().ok_or("--zenoh-config requires a path")?)?
             }
+            "--descriptor-file" => {
+                descriptor_file = Some(args.next().ok_or("--descriptor-file requires a path")?)
+            }
             _ => return Err(format!("unknown argument {arg}; use --help").into()),
         }
+    }
+    if descriptor_file.is_some() {
+        config.descriptor_file = descriptor_file;
     }
     let session = zenoh::open(zenoh_config).await?;
     let bridge = Bridge::start(session, config).await?;

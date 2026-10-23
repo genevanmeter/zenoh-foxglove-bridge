@@ -110,6 +110,85 @@ async fn descriptor_reply_encoding_can_supply_message_type() {
     roundtrip(3).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_descriptor_file_uses_encoding_message_type_without_queryable() {
+    let path = std::env::temp_dir().join(format!(
+        "zenoh-foxglove-bridge-{}-descriptor.bin",
+        std::process::id()
+    ));
+    std::fs::write(&path, descriptor(&["Other", "Reading"])).unwrap();
+
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut zenoh_config = zenoh::Config::default();
+        zenoh_config
+            .insert_json5("scouting/multicast/enabled", "false")
+            .unwrap();
+        zenoh_config.insert_json5("listen/endpoints", "[]").unwrap();
+        let session = zenoh::open(zenoh_config).await.unwrap();
+        let bridge = Bridge::start(
+            session.clone(),
+            BridgeConfig {
+                port: 0,
+                descriptor_file: Some(path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let mut request = format!("ws://127.0.0.1:{}", bridge.port())
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Sec-WebSocket-Protocol", "foxglove.sdk.v1".parse().unwrap());
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        assert_eq!(next_json(&mut socket).await["op"], "serverInfo");
+
+        session
+            .put("proto_topic", vec![8u8, 42])
+            .encoding(zenoh::bytes::Encoding::APPLICATION_PROTOBUF.with_schema("test.Reading"))
+            .await
+            .unwrap();
+        loop {
+            let message = next_json(&mut socket).await;
+            if message["op"] == "advertise" {
+                let channel = &message["channels"][0];
+                assert_eq!(channel["topic"], "proto_topic");
+                assert_eq!(channel["schemaName"], "test.Reading");
+                assert_eq!(
+                    STANDARD
+                        .decode(channel["schema"].as_str().unwrap())
+                        .unwrap(),
+                    descriptor(&["Other", "Reading"])
+                );
+                break;
+            }
+        }
+        bridge.shutdown().await;
+        session.close().await.unwrap();
+    })
+    .await
+    .expect("configured descriptor test timed out");
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn missing_configured_descriptor_prevents_startup() {
+    let session = zenoh::open(zenoh::Config::default()).await.unwrap();
+    let error = Bridge::start(
+        session,
+        BridgeConfig {
+            descriptor_file: Some("/path/that/does/not/exist".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .err()
+    .expect("startup should fail");
+    assert!(error.to_string().contains("failed to read descriptor file"));
+}
+
 async fn roundtrip(mode: u8) {
     tokio::time::timeout(Duration::from_secs(20), async {
         let mut config = zenoh::Config::default();

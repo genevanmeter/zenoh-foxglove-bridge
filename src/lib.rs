@@ -29,6 +29,8 @@ pub struct BridgeConfig {
     pub port: u16,
     pub key_expr: String,
     pub message_types: HashMap<String, String>,
+    /// Path to a binary google.protobuf.FileDescriptorSet shared by Protobuf topics.
+    pub descriptor_file: Option<String>,
     pub query_timeout_ms: u64,
     pub retry_interval_ms: u64,
     pub queue_capacity: usize,
@@ -43,6 +45,7 @@ impl Default for BridgeConfig {
             port: 8765,
             key_expr: "**".into(),
             message_types: HashMap::new(),
+            descriptor_file: None,
             query_timeout_ms: 2000,
             retry_interval_ms: 5000,
             queue_capacity: 32,
@@ -75,6 +78,7 @@ pub struct Bridge {
 impl Bridge {
     pub async fn start(session: Session, config: BridgeConfig) -> Result<Self> {
         config.validate()?;
+        let descriptor = Arc::new(load_descriptor_file(&config)?);
         let subscriber = session
             .declare_subscriber(config.key_expr.clone())
             .with(zenoh::handlers::FifoChannel::new(config.queue_capacity))
@@ -114,6 +118,7 @@ impl Bridge {
                         rx,
                         session.clone(),
                         config.clone(),
+                        descriptor.clone(),
                         context.clone(),
                     ));
                 }
@@ -145,6 +150,18 @@ impl Bridge {
     }
 }
 
+fn load_descriptor_file(config: &BridgeConfig) -> Result<Option<Vec<u8>>> {
+    let Some(path) = &config.descriptor_file else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("failed to read descriptor file at {path}: {error}"))?;
+    if bytes.len() > config.max_message_bytes {
+        return Err(format!("descriptor file at {path} exceeds max_message_bytes").into());
+    }
+    Ok(Some(bytes))
+}
+
 impl Drop for Bridge {
     fn drop(&mut self) {
         if let Some(task) = self.task.take() {
@@ -161,6 +178,7 @@ async fn topic_worker(
     mut rx: mpsc::Receiver<(Sample, SystemTime)>,
     session: Arc<Session>,
     config: Arc<BridgeConfig>,
+    descriptor: Arc<Option<Vec<u8>>>,
     context: Arc<Context>,
 ) {
     let mut channel: Option<Arc<RawChannel>> = None;
@@ -170,7 +188,7 @@ async fn topic_worker(
             if tokio::time::Instant::now() < retry_at {
                 continue;
             }
-            match create_channel(&topic, &sample, &session, &config, &context).await {
+            match create_channel(&topic, &sample, &session, &config, &descriptor, &context).await {
                 Ok(created) => {
                     tracing::info!(%topic, schema = ?created.schema(), "advertising channel");
                     channel = Some(created);
@@ -204,6 +222,7 @@ async fn create_channel(
     sample: &Sample,
     session: &Session,
     config: &BridgeConfig,
+    descriptor: &Option<Vec<u8>>,
     context: &Arc<Context>,
 ) -> Result<Arc<RawChannel>> {
     let encoding = sample.encoding().to_string();
@@ -224,6 +243,13 @@ async fn create_channel(
         Some(name) => Some(name.as_str()),
         None => protobuf_type(sample.encoding())?,
     };
+    if let Some(bytes) = descriptor {
+        let schema = schema::protobuf_schema(bytes.clone(), message_type)?;
+        return Ok(builder
+            .message_encoding("protobuf")
+            .schema(schema)
+            .build_raw()?);
+    }
     // Also query for unlabelled byte payloads: many existing publishers omit the encoding.
     let key = format!("{topic}/protobuf_descriptor");
     let replies = session

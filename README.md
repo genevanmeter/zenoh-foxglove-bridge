@@ -28,7 +28,7 @@ Run this from the repository root, or change `plugins.foxglove.__path__` to the 
 
 ## Protobuf descriptor contract
 
-For each Protobuf topic, the **publisher** exposes a Zenoh queryable on `<topic>/protobuf_descriptor`. For your reference topics these are:
+By default, for each Protobuf topic the **publisher** exposes a Zenoh queryable on `<topic>/protobuf_descriptor`. For your reference topics these are:
 
 - `proto_topic/protobuf_descriptor`
 - `proto_topic_2/protobuf_descriptor`
@@ -40,6 +40,22 @@ Generate a descriptor with:
 ```sh
 protoc --include_imports --descriptor_set_out=descriptor.bin --proto_path=. your_message.proto
 ```
+
+For existing publishers that do not expose this queryable, provide one shared descriptor set containing all message types:
+
+```sh
+./target/release/zenoh-foxglove-bridge --descriptor-file /path/to/descriptor.bin
+```
+
+The equivalent configuration setting, which also works for the `zenohd` plugin, is:
+
+```json
+{
+  "descriptor_file": "/path/to/descriptor.bin"
+}
+```
+
+The file must contain the raw binary `FileDescriptorSet` described above and may contain any number of message types and imported `.proto` files. It is read once when the bridge starts and takes precedence over descriptor queries for every Protobuf topic. Relative paths are resolved from the bridge process's working directory.
 
 The bridge selects the Protobuf message name in this order:
 
@@ -54,7 +70,7 @@ Publish the fully qualified name as Zenoh encoding metadata to support automatic
 .encoding(zenoh::bytes::Encoding::APPLICATION_PROTOBUF.with_schema("example.msg.basic.Basic"))
 ```
 
-The encoding schema contains the message name; the queryable still returns the binary `FileDescriptorSet`. Empty encoding schemas fall back to inference. Names supplied through metadata must exist in the descriptor, just like configured names. For publishers without type metadata, or to override it, configure the actual type explicitly:
+The encoding schema lets the bridge automatically select the matching type from a shared descriptor containing many messages. When queryable discovery is used, the queryable still returns the binary `FileDescriptorSet`. Empty encoding schemas fall back to inference. Names supplied through metadata must exist in the descriptor, just like configured names. For publishers without type metadata, or to override an exceptional topic, configure the actual type explicitly:
 
 ```json
 {
@@ -67,13 +83,13 @@ The encoding schema contains the message name; the queryable still returns the b
 
 Configured types must exist in the descriptor; nested message names are supported. Set the Zenoh message encoding to `application/protobuf` when possible. Unlabelled byte payloads also trigger descriptor discovery, so existing publishers that omit encoding work. Descriptor keys are metadata and are not advertised as data channels.
 
-Missing, malformed, or ambiguous descriptors generate a warning and are retried when subsequent messages arrive after `retry_interval_ms`. The first message is held while its descriptor is queried; bounded queues buffer further messages. Once established, a topic's encoding and schema are fixed until the bridge restarts. A topic must use one stable encoding and message type, with consistent descriptor responses from all publishers.
+Missing, malformed, or ambiguous queried descriptors generate a warning and are retried when subsequent messages arrive after `retry_interval_ms`. Configured descriptor files that cannot be read or exceed `max_message_bytes` prevent bridge startup; malformed or ambiguous configured contents are reported when the topic first publishes. The first message is held while a descriptor is queried; bounded queues buffer further messages. Once established, a topic's encoding and schema are fixed until the bridge restarts. A topic must use one stable encoding and message type, with consistent descriptor responses from all publishers.
 
 ## JSON and resource limits
 
 Zenoh `application/json` and `text/json` messages are forwarded as JSON channels with a permissive object schema. Invalid JSON and non-object JSON values are dropped. Other payloads require a Protobuf descriptor; arbitrary raw bytes, ROS/CDR, and text are not automatically converted.
 
-`config/bridge.json` lists all settings. `key_expr` selects topics using a Zenoh key expression. Descriptor queries time out after `query_timeout_ms`. Each topic has an independent worker and `queue_capacity` pending messages, so a missing descriptor does not block other topics. Full topic queues drop new arrivals (logged at debug level). `max_topics` bounds the number of tracked topics; `max_message_bytes` limits payload and descriptor sizes. Channels remain registered until shutdown. These are live streams: there is no history replay, and messages sent before a viewer subscribes are not retained for it.
+`config/bridge.json` lists all settings. `key_expr` selects topics using a Zenoh key expression. `descriptor_file` supplies one shared descriptor set for Protobuf topics. Descriptor queries time out after `query_timeout_ms`. Each topic has an independent worker and `queue_capacity` pending messages, so a missing descriptor does not block other topics. Full topic queues drop new arrivals (logged at debug level). `max_topics` bounds the number of tracked topics; `max_message_bytes` limits payload and descriptor sizes. Channels remain registered until shutdown. These are live streams: there is no history replay, and messages sent before a viewer subscribes are not retained for it.
 
 Zenoh timestamps are preserved when present; otherwise the bridge uses its receive time. Set `RUST_LOG=debug` for standalone diagnostics. The plugin uses the router's logging configuration.
 
@@ -86,6 +102,16 @@ cargo run --bin zenoh-foxglove-bridge
 cargo run --example protobuf_publisher
 # With the example router instead:
 cargo run --example protobuf_publisher -- config/client.json5
+
+# Or demonstrate a publisher with no descriptor queryable. Generate the shared
+# descriptor first, then pass it to the bridge:
+protoc --include_imports --descriptor_set_out=descriptor.bin \
+  --proto_path=examples examples/reading.proto
+# Terminal 1:
+cargo run --bin zenoh-foxglove-bridge -- --descriptor-file descriptor.bin
+# Terminal 2:
+cargo run --example protobuf_publisher_no_queryable
+# With the example router, append: -- config/client.json5
 
 cargo test --locked
 ```

@@ -3,6 +3,7 @@
   "port": 8765,
   "key_expr": "**",
   "message_types": {},
+  "descriptor_file": null,
   "query_timeout_ms": 2000,
   "retry_interval_ms": 5000,
   "queue_capacity": 32,
