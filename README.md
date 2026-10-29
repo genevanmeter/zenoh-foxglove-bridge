@@ -116,6 +116,24 @@ cargo run --example protobuf_publisher_no_queryable
 cargo test --locked
 ```
 
+To demonstrate image rendering with Foxglove's JSON `RawImage` schema, run the bridge and this publisher in separate terminals:
+
+```sh
+cargo run --example raw_image_json_publisher
+# With the example router:
+cargo run --example raw_image_json_publisher -- config/client.json5
+```
+
+The example publishes a moving RGB image on `demo/foxglove/raw_image`. Add that topic to Lichtblick's Image panel. Its Zenoh encoding includes the `foxglove.RawImage` schema name, allowing the bridge to advertise the recognized datatype instead of generic `json`.
+
+The equivalent Protobuf example publishes on `demo/foxglove/raw_image_proto` and provides the canonical descriptor through a Zenoh queryable:
+
+```sh
+cargo run --example raw_image_protobuf_publisher
+# With the example router:
+cargo run --example raw_image_protobuf_publisher -- config/client.json5
+```
+
 The integration test uses an isolated Zenoh session and a real Foxglove SDK WebSocket client to check schema advertisements, descriptor retrieval, exact message bytes, timestamps, JSON forwarding, late descriptors, and shutdown.
 
 To test the built executable and dynamically loaded plugin against an installed `zenohd` 1.10.1, run:

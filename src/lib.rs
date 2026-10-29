@@ -264,14 +264,21 @@ async fn create_channel(
     let builder = ChannelBuilder::new(topic).context(context);
     if matches!(mime, "application/json" | "text/json") && !config.message_types.contains_key(topic)
     {
+        let (name, schema) = match json_type(sample.encoding())? {
+            Some("foxglove.RawImage") => ("foxglove.RawImage", schema::RAW_IMAGE_JSON_SCHEMA),
+            Some(name) => (
+                name,
+                &br#"{"type":"object","additionalProperties":true}"#[..],
+            ),
+            None => (
+                "json",
+                &br#"{"type":"object","additionalProperties":true}"#[..],
+            ),
+        };
         return Ok(CreatedChannel {
             channel: builder
                 .message_encoding("json")
-                .schema(foxglove::Schema::new(
-                    "json",
-                    "jsonschema",
-                    br#"{"type":"object","additionalProperties":true}"#.to_vec(),
-                ))
+                .schema(foxglove::Schema::new(name, "jsonschema", schema.to_vec()))
                 .build_raw()?,
             format: PayloadFormat::JsonObject,
         });
@@ -372,6 +379,20 @@ fn protobuf_type(encoding: &zenoh::bytes::Encoding) -> Result<Option<&str>> {
                 .map(str::trim)
                 .map_err(|error| {
                     format!("Protobuf encoding schema must be a UTF-8 message name: {error}").into()
+                })
+        })
+        .transpose()
+        .map(|name| name.filter(|name| !name.is_empty()))
+}
+
+fn json_type(encoding: &zenoh::bytes::Encoding) -> Result<Option<&str>> {
+    encoding
+        .schema()
+        .map(|schema| {
+            std::str::from_utf8(schema.as_ref())
+                .map(str::trim)
+                .map_err(|error| {
+                    format!("JSON encoding schema must be a UTF-8 type name: {error}").into()
                 })
         })
         .transpose()

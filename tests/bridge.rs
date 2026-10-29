@@ -227,10 +227,12 @@ async fn roundtrip(mode: u8) {
         session.put("json_topic", r#"{"value":7}"#).encoding("application/json").await.unwrap();
         session.put("raw_topic", vec![0u8, 127, 255]).encoding("application/octet-stream").await.unwrap();
         session.put("text_topic", "hello zenoh").encoding("text/plain; charset=utf-8").await.unwrap();
+        session.put("image_topic", r#"{"timestamp":{"sec":0,"nsec":0},"frame_id":"camera","width":1,"height":1,"encoding":"rgb8","step":3,"data":"/wAA"}"#)
+            .encoding(zenoh::bytes::Encoding::APPLICATION_JSON.with_schema("foxglove.RawImage")).await.unwrap();
         // Metadata keys must never be advertised as data channels.
         session.put("ignored/protobuf_descriptor", bytes.clone()).await.unwrap();
         let mut advertisements = std::collections::HashMap::new();
-        while advertisements.len() < 4 {
+        while advertisements.len() < 5 {
             let message = next_json(&mut socket).await;
             if message["op"] == "advertise" {
                 for channel in message["channels"].as_array().unwrap() {
@@ -247,6 +249,7 @@ async fn roundtrip(mode: u8) {
         assert_eq!(advertisements["raw_topic"]["encoding"], "json");
         assert_eq!(advertisements["text_topic"]["encoding"], "json");
         assert_eq!(advertisements["text_topic"]["schemaName"], "text");
+        assert_eq!(advertisements["image_topic"]["schemaName"], "foxglove.RawImage");
         socket.send(WsMessage::Text(json!({"op":"subscribe","subscriptions":[
             {"id":11,"channelId":proto["id"]}, {"id":12,"channelId":advertisements["json_topic"]["id"]},
             {"id":13,"channelId":advertisements["raw_topic"]["id"]},

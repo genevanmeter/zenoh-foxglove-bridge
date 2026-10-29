@@ -2,6 +2,22 @@ use crate::Result;
 use prost::Message;
 use prost_types::{DescriptorProto, FileDescriptorSet};
 
+pub const RAW_IMAGE_JSON_SCHEMA: &[u8] = br#"{
+  "title":"foxglove.RawImage",
+  "description":"A raw image",
+  "type":"object",
+  "properties":{
+    "timestamp":{"type":"object","properties":{"sec":{"type":"integer","minimum":0},"nsec":{"type":"integer","minimum":0,"maximum":999999999}},"required":["sec","nsec"]},
+    "frame_id":{"type":"string"},
+    "width":{"type":"integer","minimum":0},
+    "height":{"type":"integer","minimum":0},
+    "encoding":{"type":"string"},
+    "step":{"type":"integer","minimum":0},
+    "data":{"type":"string","contentEncoding":"base64"}
+  },
+  "required":["timestamp","frame_id","width","height","encoding","step","data"]
+}"#;
+
 /// Select a type without relying on descriptor file order (imports often come first).
 pub fn protobuf_schema(bytes: Vec<u8>, configured: Option<&str>) -> Result<foxglove::Schema> {
     let set = FileDescriptorSet::decode(bytes.as_slice())?;
