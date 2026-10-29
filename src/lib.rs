@@ -181,7 +181,7 @@ async fn topic_worker(
     descriptor: Arc<Option<Vec<u8>>>,
     context: Arc<Context>,
 ) {
-    let mut channel: Option<Arc<RawChannel>> = None;
+    let mut channel: Option<CreatedChannel> = None;
     let mut retry_at = tokio::time::Instant::now();
     while let Some((sample, received)) = rx.recv().await {
         if channel.is_none() {
@@ -190,7 +190,7 @@ async fn topic_worker(
             }
             match create_channel(&topic, &sample, &session, &config, &descriptor, &context).await {
                 Ok(created) => {
-                    tracing::info!(%topic, schema = ?created.schema(), "advertising channel");
+                    tracing::info!(%topic, schema = ?created.channel.schema(), "advertising channel");
                     channel = Some(created);
                 }
                 Err(error) => {
@@ -201,20 +201,54 @@ async fn topic_worker(
                 }
             }
         }
-        let channel = channel.as_ref().unwrap();
+        let created = channel.as_ref().unwrap();
         let payload = sample.payload().to_bytes();
-        if channel.message_encoding() == "json"
-            && !serde_json::from_slice::<serde_json::Value>(&payload).is_ok_and(|v| v.is_object())
-        {
-            tracing::warn!(%topic, "dropping invalid JSON object");
-            continue;
-        }
+        let payload = match created.format {
+            PayloadFormat::Original => payload.into_owned(),
+            PayloadFormat::JsonObject => {
+                if !serde_json::from_slice::<serde_json::Value>(&payload)
+                    .is_ok_and(|v| v.is_object())
+                {
+                    tracing::warn!(%topic, "dropping invalid JSON object");
+                    continue;
+                }
+                payload.into_owned()
+            }
+            PayloadFormat::RawBytes => serde_json::to_vec(&serde_json::json!({
+                "encoding": sample.encoding().to_string(),
+                "data": payload.as_ref(),
+            }))
+            .expect("raw byte envelope is always valid JSON"),
+            PayloadFormat::Text => match std::str::from_utf8(&payload) {
+                Ok(text) => serde_json::to_vec(&serde_json::json!({ "data": text }))
+                    .expect("UTF-8 text envelope is always valid JSON"),
+                Err(error) => {
+                    tracing::warn!(%topic, %error, "dropping invalid UTF-8 text");
+                    continue;
+                }
+            },
+        };
         let time = sample
             .timestamp()
             .map(|t| t.get_time().to_system_time())
             .unwrap_or(received);
-        channel.log_with_meta(&payload, PartialMetadata::with_log_time(time));
+        created
+            .channel
+            .log_with_meta(&payload, PartialMetadata::with_log_time(time));
     }
+}
+
+#[derive(Clone, Copy)]
+enum PayloadFormat {
+    Original,
+    JsonObject,
+    RawBytes,
+    Text,
+}
+
+struct CreatedChannel {
+    channel: Arc<RawChannel>,
+    format: PayloadFormat,
 }
 
 async fn create_channel(
@@ -224,20 +258,51 @@ async fn create_channel(
     config: &BridgeConfig,
     descriptor: &Option<Vec<u8>>,
     context: &Arc<Context>,
-) -> Result<Arc<RawChannel>> {
+) -> Result<CreatedChannel> {
     let encoding = sample.encoding().to_string();
     let mime = encoding.split(';').next().unwrap_or(&encoding);
     let builder = ChannelBuilder::new(topic).context(context);
     if matches!(mime, "application/json" | "text/json") && !config.message_types.contains_key(topic)
     {
-        return Ok(builder
-            .message_encoding("json")
-            .schema(foxglove::Schema::new(
-                topic,
-                "jsonschema",
-                br#"{"type":"object","additionalProperties":true}"#.to_vec(),
-            ))
-            .build_raw()?);
+        return Ok(CreatedChannel {
+            channel: builder
+                .message_encoding("json")
+                .schema(foxglove::Schema::new(
+                    "json",
+                    "jsonschema",
+                    br#"{"type":"object","additionalProperties":true}"#.to_vec(),
+                ))
+                .build_raw()?,
+            format: PayloadFormat::JsonObject,
+        });
+    }
+    if mime == "text/plain" && !config.message_types.contains_key(topic) {
+        return Ok(CreatedChannel {
+            channel: builder
+                .message_encoding("json")
+                .schema(foxglove::Schema::new(
+                    "text",
+                    "jsonschema",
+                    br#"{"type":"object","properties":{"data":{"type":"string"}},"required":["data"],"additionalProperties":false}"#.to_vec(),
+                ))
+                .build_raw()?,
+            format: PayloadFormat::Text,
+        });
+    }
+    let is_protobuf = config.message_types.contains_key(topic)
+        || sample.encoding().id() == zenoh::bytes::Encoding::APPLICATION_PROTOBUF.id();
+    if !is_protobuf {
+        return Ok(CreatedChannel {
+            channel: builder
+                .message_encoding("json")
+                .schema(foxglove::Schema::new(
+                    format!("{topic}.RawBytes"),
+                    "jsonschema",
+                    br#"{"type":"object","properties":{"encoding":{"type":"string"},"data":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}}},"required":["encoding","data"],"additionalProperties":false}"#.to_vec(),
+                ))
+                .build_raw()?,
+            format: PayloadFormat::RawBytes,
+        });
     }
     let message_type = match config.message_types.get(topic) {
         Some(name) => Some(name.as_str()),
@@ -245,12 +310,15 @@ async fn create_channel(
     };
     if let Some(bytes) = descriptor {
         let schema = schema::protobuf_schema(bytes.clone(), message_type)?;
-        return Ok(builder
-            .message_encoding("protobuf")
-            .schema(schema)
-            .build_raw()?);
+        return Ok(CreatedChannel {
+            channel: builder
+                .message_encoding("protobuf")
+                .schema(schema)
+                .build_raw()?,
+            format: PayloadFormat::Original,
+        });
     }
-    // Also query for unlabelled byte payloads: many existing publishers omit the encoding.
+    // Explicit Protobuf topics without a configured descriptor discover it from the publisher.
     let key = format!("{topic}/protobuf_descriptor");
     let replies = session
         .get(&key)
@@ -274,10 +342,13 @@ async fn create_channel(
                     },
                 ) {
                     Ok(schema) => {
-                        return Ok(builder
-                            .message_encoding("protobuf")
-                            .schema(schema)
-                            .build_raw()?);
+                        return Ok(CreatedChannel {
+                            channel: builder
+                                .message_encoding("protobuf")
+                                .schema(schema)
+                                .build_raw()?,
+                            format: PayloadFormat::Original,
+                        });
                     }
                     Err(error) => last_error = error.to_string(),
                 }

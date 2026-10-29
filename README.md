@@ -81,13 +81,13 @@ The encoding schema lets the bridge automatically select the matching type from 
 }
 ```
 
-Configured types must exist in the descriptor; nested message names are supported. Set the Zenoh message encoding to `application/protobuf` when possible. Unlabelled byte payloads also trigger descriptor discovery, so existing publishers that omit encoding work. Descriptor keys are metadata and are not advertised as data channels.
+Configured types must exist in the descriptor; nested message names are supported. Protobuf publishers must set the Zenoh message encoding to `application/protobuf` or have their topic listed in `message_types`; otherwise the payload is intentionally treated as raw bytes. Descriptor keys are metadata and are not advertised as data channels.
 
 Missing, malformed, or ambiguous queried descriptors generate a warning and are retried when subsequent messages arrive after `retry_interval_ms`. Configured descriptor files that cannot be read or exceed `max_message_bytes` prevent bridge startup; malformed or ambiguous configured contents are reported when the topic first publishes. The first message is held while a descriptor is queried; bounded queues buffer further messages. Once established, a topic's encoding and schema are fixed until the bridge restarts. A topic must use one stable encoding and message type, with consistent descriptor responses from all publishers.
 
 ## JSON and resource limits
 
-Zenoh `application/json` and `text/json` messages are forwarded as JSON channels with a permissive object schema. Invalid JSON and non-object JSON values are dropped. Other payloads require a Protobuf descriptor; arbitrary raw bytes, ROS/CDR, and text are not automatically converted.
+Zenoh `application/json` and `text/json` messages are forwarded as JSON channels with the schema name `json` and a permissive object schema. Invalid JSON and non-object JSON values are dropped. UTF-8 `text/plain` payloads use the schema name `text` and are exposed as JSON objects whose `data` field is the original string; invalid UTF-8 text is dropped. `application/protobuf` messages (and topics listed in `message_types`) use Protobuf descriptor discovery. All other encodings, including Zenoh's default byte encoding, are exposed as JSON raw envelopes with an `encoding` string and a `data` array containing the exact payload bytes, so they can be inspected in Foxglove's Raw Messages panel.
 
 `config/bridge.json` lists all settings. `key_expr` selects topics using a Zenoh key expression. `descriptor_file` supplies one shared descriptor set for Protobuf topics. Descriptor queries time out after `query_timeout_ms`. Each topic has an independent worker and `queue_capacity` pending messages, so a missing descriptor does not block other topics. Full topic queues drop new arrivals (logged at debug level). `max_topics` bounds the number of tracked topics; `max_message_bytes` limits payload and descriptor sizes. Channels remain registered until shutdown. These are live streams: there is no history replay, and messages sent before a viewer subscribes are not retained for it.
 

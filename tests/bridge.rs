@@ -217,7 +217,7 @@ async fn roundtrip(mode: u8) {
             }
         });
         // A missing descriptor must not prevent discovery of the healthy topic or JSON.
-        session.put("proto_topic_2", vec![8u8, 42]).await.unwrap();
+        session.put("proto_topic_2", vec![8u8, 42]).encoding(zenoh::bytes::Encoding::APPLICATION_PROTOBUF).await.unwrap();
         let encoding = match mode {
             1 => zenoh::bytes::Encoding::APPLICATION_PROTOBUF.with_schema("test.Reading"),
             2 => zenoh::bytes::Encoding::APPLICATION_PROTOBUF.with_schema("test.Other"),
@@ -225,10 +225,12 @@ async fn roundtrip(mode: u8) {
         };
         session.put("proto_topic", vec![8u8, 42]).encoding(encoding).await.unwrap();
         session.put("json_topic", r#"{"value":7}"#).encoding("application/json").await.unwrap();
+        session.put("raw_topic", vec![0u8, 127, 255]).encoding("application/octet-stream").await.unwrap();
+        session.put("text_topic", "hello zenoh").encoding("text/plain; charset=utf-8").await.unwrap();
         // Metadata keys must never be advertised as data channels.
         session.put("ignored/protobuf_descriptor", bytes.clone()).await.unwrap();
         let mut advertisements = std::collections::HashMap::new();
-        while advertisements.len() < 2 {
+        while advertisements.len() < 4 {
             let message = next_json(&mut socket).await;
             if message["op"] == "advertise" {
                 for channel in message["channels"].as_array().unwrap() {
@@ -241,8 +243,14 @@ async fn roundtrip(mode: u8) {
         assert_eq!(proto["schemaName"], "test.Reading");
         assert_eq!(STANDARD.decode(proto["schema"].as_str().unwrap()).unwrap(), bytes);
         assert_eq!(advertisements["json_topic"]["encoding"], "json");
+        assert_eq!(advertisements["json_topic"]["schemaName"], "json");
+        assert_eq!(advertisements["raw_topic"]["encoding"], "json");
+        assert_eq!(advertisements["text_topic"]["encoding"], "json");
+        assert_eq!(advertisements["text_topic"]["schemaName"], "text");
         socket.send(WsMessage::Text(json!({"op":"subscribe","subscriptions":[
-            {"id":11,"channelId":proto["id"]}, {"id":12,"channelId":advertisements["json_topic"]["id"]}
+            {"id":11,"channelId":proto["id"]}, {"id":12,"channelId":advertisements["json_topic"]["id"]},
+            {"id":13,"channelId":advertisements["raw_topic"]["id"]},
+            {"id":14,"channelId":advertisements["text_topic"]["id"]}
         ]}).to_string().into())).await.unwrap();
         // Publish repeatedly until the server has processed the subscription.
         let publisher = session.clone();
@@ -252,18 +260,28 @@ async fn roundtrip(mode: u8) {
             loop {
                 publisher.put("proto_topic", vec![8u8, 99]).timestamp(timestamp).await.unwrap();
                 publisher.put("json_topic", r#"{"value":9}"#).encoding("application/json").await.unwrap();
+                publisher.put("raw_topic", vec![0u8, 127, 255]).encoding("application/octet-stream").await.unwrap();
+                publisher.put("text_topic", "hello zenoh").encoding("text/plain; charset=utf-8").await.unwrap();
                 tokio::time::sleep(Duration::from_millis(30)).await;
             }
         });
         let mut seen = std::collections::HashSet::new();
-        while seen.len() < 2 {
+        while seen.len() < 4 {
             if let WsMessage::Binary(data) = socket.next().await.unwrap().unwrap() {
                 assert_eq!(data[0], 1);
                 let id = u32::from_le_bytes(data[1..5].try_into().unwrap());
                 if id == 11 {
                     assert_eq!(&data[13..], &[8, 99]);
                     assert_eq!(u64::from_le_bytes(data[5..13].try_into().unwrap()), expected_time);
-                } else { assert_eq!(id, 12); assert_eq!(&data[13..], br#"{"value":9}"#); }
+                } else if id == 12 {
+                    assert_eq!(&data[13..], br#"{"value":9}"#);
+                } else if id == 13 {
+                    let envelope: Value = serde_json::from_slice(&data[13..]).unwrap();
+                    assert_eq!(envelope, json!({"encoding":"application/octet-stream","data":[0,127,255]}));
+                } else {
+                    assert_eq!(id, 14);
+                    assert_eq!(&data[13..], br#"{"data":"hello zenoh"}"#);
+                }
                 seen.insert(id);
             }
         }
@@ -273,7 +291,7 @@ async fn roundtrip(mode: u8) {
             while let Ok(query) = q2.recv_async().await { query.reply(query.key_expr(), bytes.clone()).encoding(zenoh::bytes::Encoding::APPLICATION_PROTOBUF.with_schema("test.Reading")).await.unwrap(); }
         });
         tokio::time::sleep(Duration::from_millis(250)).await;
-        session.put("proto_topic_2", vec![8u8, 55]).await.unwrap();
+        session.put("proto_topic_2", vec![8u8, 55]).encoding(zenoh::bytes::Encoding::APPLICATION_PROTOBUF).await.unwrap();
         loop {
             let message = next_json(&mut socket).await;
             if message["op"] == "advertise" && message["channels"].as_array().unwrap().iter().any(|c| c["topic"] == "proto_topic_2") { break; }
