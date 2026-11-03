@@ -347,6 +347,7 @@ async fn roundtrip(mode: u8) {
         assert_eq!(advertisements["json_topic"]["encoding"], "json");
         assert_eq!(advertisements["json_topic"]["schemaName"], "json");
         assert_eq!(advertisements["raw_topic"]["encoding"], "json");
+        assert_eq!(advertisements["raw_topic"]["schemaName"], "Zenoh.RawBytes");
         assert_eq!(advertisements["text_topic"]["encoding"], "json");
         assert_eq!(advertisements["text_topic"]["schemaName"], "text");
         assert_eq!(advertisements["image_topic"]["schemaName"], "foxglove.RawImage");
@@ -380,7 +381,7 @@ async fn roundtrip(mode: u8) {
                     assert_eq!(&data[13..], br#"{"value":9}"#);
                 } else if id == 13 {
                     let envelope: Value = serde_json::from_slice(&data[13..]).unwrap();
-                    assert_eq!(envelope, json!({"encoding":"application/octet-stream","data":[0,127,255]}));
+                    assert_eq!(envelope, json!({"encoding":"application/octet-stream","data":[0,127,255],"hex":"007fff"}));
                 } else {
                     assert_eq!(id, 14);
                     assert_eq!(&data[13..], br#"{"data":"hello zenoh"}"#);

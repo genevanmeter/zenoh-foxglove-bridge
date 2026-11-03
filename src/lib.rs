@@ -276,11 +276,15 @@ async fn topic_worker(
                 }
                 payload.into_owned()
             }
-            PayloadFormat::RawBytes => serde_json::to_vec(&serde_json::json!({
-                "encoding": sample.encoding().to_string(),
-                "data": payload.as_ref(),
-            }))
-            .expect("raw byte envelope is always valid JSON"),
+            PayloadFormat::RawBytes => {
+                let hex = hex_string(&payload);
+                serde_json::to_vec(&serde_json::json!({
+                    "encoding": sample.encoding().to_string(),
+                    "data": payload.as_ref(),
+                    "hex": hex,
+                }))
+                .expect("raw byte envelope is always valid JSON")
+            }
             PayloadFormat::Text => match std::str::from_utf8(&payload) {
                 Ok(text) => serde_json::to_vec(&serde_json::json!({ "data": text }))
                     .expect("UTF-8 text envelope is always valid JSON"),
@@ -369,9 +373,9 @@ async fn create_channel(
             channel: builder
                 .message_encoding("json")
                 .schema(foxglove::Schema::new(
-                    format!("{topic}.RawBytes"),
+                    "Zenoh.RawBytes",
                     "jsonschema",
-                    br#"{"type":"object","properties":{"encoding":{"type":"string"},"data":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}}},"required":["encoding","data"],"additionalProperties":false}"#.to_vec(),
+                    br#"{"type":"object","properties":{"encoding":{"type":"string"},"data":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"hex":{"type":"string","pattern":"^[0-9a-f]*$"}},"required":["encoding","data","hex"],"additionalProperties":false}"#.to_vec(),
                 ))
                 .build_raw()?,
             format: PayloadFormat::RawBytes,
@@ -434,6 +438,16 @@ async fn create_channel(
         }
     }
     Err(last_error.into())
+}
+
+fn hex_string(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut result = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        result.push(DIGITS[(byte >> 4) as usize] as char);
+        result.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    result
 }
 
 // Zenoh's schema bytes carry the fully qualified message name, not the descriptor.
