@@ -111,6 +111,106 @@ async fn descriptor_reply_encoding_can_supply_message_type() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changed_queried_descriptor_replaces_advertised_channel() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut config = zenoh::Config::default();
+        config
+            .insert_json5("scouting/multicast/enabled", "false")
+            .unwrap();
+        config.insert_json5("listen/endpoints", "[]").unwrap();
+        let session = zenoh::open(config).await.unwrap();
+        let bridge = Bridge::start(
+            session.clone(),
+            BridgeConfig {
+                port: 0,
+                query_timeout_ms: 100,
+                retry_interval_ms: 100,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut request = format!("ws://127.0.0.1:{}", bridge.port())
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Sec-WebSocket-Protocol", "foxglove.sdk.v1".parse().unwrap());
+        let (mut socket, _) = connect_async(request).await.unwrap();
+        assert_eq!(next_json(&mut socket).await["op"], "serverInfo");
+
+        let current_descriptor = std::sync::Arc::new(tokio::sync::RwLock::new(descriptor(&["V1"])));
+        let q = session
+            .declare_queryable("changing/protobuf_descriptor")
+            .await
+            .unwrap();
+        let query_descriptor = current_descriptor.clone();
+        let query_task = tokio::spawn(async move {
+            while let Ok(query) = q.recv_async().await {
+                query
+                    .reply(query.key_expr(), query_descriptor.read().await.clone())
+                    .await
+                    .unwrap();
+            }
+        });
+
+        session
+            .put("changing", vec![8u8, 1])
+            .encoding(zenoh::bytes::Encoding::APPLICATION_PROTOBUF.with_schema("test.V1"))
+            .await
+            .unwrap();
+        let old_id = loop {
+            let message = next_json(&mut socket).await;
+            if message["op"] == "advertise" && message["channels"][0]["topic"] == "changing" {
+                assert_eq!(message["channels"][0]["schemaName"], "test.V1");
+                break message["channels"][0]["id"].as_u64().unwrap();
+            }
+        };
+
+        *current_descriptor.write().await = descriptor(&["V2"]);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        session
+            .put("changing", vec![8u8, 2])
+            .encoding(zenoh::bytes::Encoding::APPLICATION_PROTOBUF.with_schema("test.V2"))
+            .await
+            .unwrap();
+
+        loop {
+            let message = next_json(&mut socket).await;
+            if message["op"] == "unadvertise" {
+                let removed_old_channel = message["channelIds"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|id| id.as_u64() == Some(old_id));
+                if removed_old_channel {
+                    break;
+                }
+            } else if message["op"] == "advertise" && message["channels"][0]["topic"] == "changing"
+            {
+                panic!("replacement was advertised before the old channel was unadvertised");
+            }
+        }
+        loop {
+            let message = next_json(&mut socket).await;
+            if message["op"] == "advertise" && message["channels"][0]["topic"] == "changing" {
+                assert_eq!(message["channels"][0]["schemaName"], "test.V2");
+                assert_ne!(message["channels"][0]["id"].as_u64(), Some(old_id));
+                break;
+            }
+        }
+
+        socket.close(None).await.unwrap();
+        bridge.shutdown().await;
+        query_task.abort();
+        session.close().await.unwrap();
+    })
+    .await
+    .expect("descriptor refresh test timed out");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shared_descriptor_file_uses_encoding_message_type_without_queryable() {
     let path = std::env::temp_dir().join(format!(
         "zenoh-foxglove-bridge-{}-descriptor.bin",

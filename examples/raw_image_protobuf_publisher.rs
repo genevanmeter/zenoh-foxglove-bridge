@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mut ticks = tokio::time::interval(Duration::from_millis(100));
+    let mut ticks = tokio::time::interval(Duration::from_micros(16667));
     let mut frame = 0_u8;
     println!("Publishing {MESSAGE_TYPE} on {TOPIC}; press Ctrl-C to stop");
     loop {

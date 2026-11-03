@@ -183,6 +183,7 @@ async fn topic_worker(
 ) {
     let mut channel: Option<CreatedChannel> = None;
     let mut retry_at = tokio::time::Instant::now();
+    let mut refresh_at = tokio::time::Instant::now();
     while let Some((sample, received)) = rx.recv().await {
         if channel.is_none() {
             if tokio::time::Instant::now() < retry_at {
@@ -191,6 +192,8 @@ async fn topic_worker(
             match create_channel(&topic, &sample, &session, &config, &descriptor, &context).await {
                 Ok(created) => {
                     tracing::info!(%topic, schema = ?created.channel.schema(), "advertising channel");
+                    refresh_at = tokio::time::Instant::now()
+                        + Duration::from_millis(config.retry_interval_ms);
                     channel = Some(created);
                 }
                 Err(error) => {
@@ -198,6 +201,65 @@ async fn topic_worker(
                     retry_at = tokio::time::Instant::now()
                         + Duration::from_millis(config.retry_interval_ms);
                     continue;
+                }
+            }
+        } else if channel.as_ref().is_some_and(|created| created.refreshable)
+            && tokio::time::Instant::now() >= refresh_at
+        {
+            refresh_at =
+                tokio::time::Instant::now() + Duration::from_millis(config.retry_interval_ms);
+            // Use an isolated context for discovery. Registering the candidate in the live
+            // context first leaves two channels with the same topic and can confuse clients.
+            let discovery_context = Context::new();
+            match create_channel(
+                &topic,
+                &sample,
+                &session,
+                &config,
+                &descriptor,
+                &discovery_context,
+            )
+            .await
+            {
+                Ok(refreshed) => {
+                    let current = channel.as_ref().unwrap();
+                    if current.channel.message_encoding() != refreshed.channel.message_encoding()
+                        || current.channel.schema() != refreshed.channel.schema()
+                        || current.format != refreshed.format
+                    {
+                        let schema = refreshed.channel.schema().cloned();
+                        let message_encoding = refreshed.channel.message_encoding().to_owned();
+                        let format = refreshed.format;
+                        current.channel.close();
+                        let mut builder = ChannelBuilder::new(&topic)
+                            .context(&context)
+                            .message_encoding(message_encoding);
+                        if let Some(schema) = schema {
+                            builder = builder.schema(schema);
+                        }
+                        match builder.build_raw() {
+                            Ok(replacement) => {
+                                tracing::info!(%topic, schema = ?replacement.schema(), "protobuf descriptor changed; re-advertised channel");
+                                channel = Some(CreatedChannel {
+                                    channel: replacement,
+                                    format,
+                                    refreshable: true,
+                                });
+                            }
+                            Err(error) => {
+                                tracing::error!(%topic, %error, "failed to advertise replacement channel");
+                                channel = None;
+                                retry_at = tokio::time::Instant::now()
+                                    + Duration::from_millis(config.retry_interval_ms);
+                                continue;
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    // Keep forwarding on the last known-good channel during transient publisher
+                    // restarts or malformed descriptor replies.
+                    tracing::warn!(%topic, %error, "descriptor refresh failed; keeping current channel");
                 }
             }
         }
@@ -238,7 +300,7 @@ async fn topic_worker(
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum PayloadFormat {
     Original,
     JsonObject,
@@ -249,6 +311,8 @@ enum PayloadFormat {
 struct CreatedChannel {
     channel: Arc<RawChannel>,
     format: PayloadFormat,
+    /// Queried descriptors may change while a development publisher is restarted.
+    refreshable: bool,
 }
 
 async fn create_channel(
@@ -281,6 +345,7 @@ async fn create_channel(
                 .schema(foxglove::Schema::new(name, "jsonschema", schema.to_vec()))
                 .build_raw()?,
             format: PayloadFormat::JsonObject,
+            refreshable: false,
         });
     }
     if mime == "text/plain" && !config.message_types.contains_key(topic) {
@@ -294,6 +359,7 @@ async fn create_channel(
                 ))
                 .build_raw()?,
             format: PayloadFormat::Text,
+            refreshable: false,
         });
     }
     let is_protobuf = config.message_types.contains_key(topic)
@@ -309,6 +375,7 @@ async fn create_channel(
                 ))
                 .build_raw()?,
             format: PayloadFormat::RawBytes,
+            refreshable: false,
         });
     }
     let message_type = match config.message_types.get(topic) {
@@ -323,6 +390,7 @@ async fn create_channel(
                 .schema(schema)
                 .build_raw()?,
             format: PayloadFormat::Original,
+            refreshable: false,
         });
     }
     // Explicit Protobuf topics without a configured descriptor discover it from the publisher.
@@ -355,6 +423,7 @@ async fn create_channel(
                                 .schema(schema)
                                 .build_raw()?,
                             format: PayloadFormat::Original,
+                            refreshable: true,
                         });
                     }
                     Err(error) => last_error = error.to_string(),
