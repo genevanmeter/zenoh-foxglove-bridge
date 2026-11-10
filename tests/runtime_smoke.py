@@ -97,7 +97,12 @@ def run(mode):
                        config("bridge.json", settings), "--zenoh-config", client)
             deadline = time.monotonic() + 20
             while True:
-                assert all(p.poll() is None for p in processes), "bridge/router exited"
+                for process in processes:
+                    if process.poll() is not None:
+                        raise RuntimeError(
+                            f"{mode}: {process.args[0]} exited with code {process.returncode}; "
+                            "see process log above for startup or plugin compatibility errors"
+                        )
                 try:
                     sock = socket.create_connection(("127.0.0.1", ws_port), timeout=1)
                     break
