@@ -2,6 +2,8 @@
 
 A standalone Rust executable and a `zenohd` plugin that forward Zenoh messages to a Foxglove WebSocket server for Foxglove Studio and Lichtblick. Both use the Foxglove SDK (`foxglove.sdk.v1`) and advertise topics as messages arrive. Lichtblick 1.22.0 or newer is required; your 1.28.1 version supports this protocol. Defaults: `ws://127.0.0.1:8765`, Zenoh subscription `**` (including `proto_topic` and `proto_topic_2`).
 
+![Zenoh Foxglove Bridge demo](docs/images/lichtblick_screenshot.png)
+
 ## Build and run
 
 ```sh
