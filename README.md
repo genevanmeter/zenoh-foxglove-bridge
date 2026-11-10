@@ -58,15 +58,19 @@ By default, each Protobuf publisher must expose a Zenoh queryable on `<topic>/pr
 
 Reply on that same key with the raw binary **`google.protobuf.FileDescriptorSet`**, including imported files. Do not send `.proto` source text, base64 text, or a single `FileDescriptorProto`. The bridge queries the descriptor, advertises a `protobuf` channel with the descriptor as its schema, and forwards the original message bytes. The SDK handles WebSocket schema base64 encoding. This follows [Foxglove's Protobuf schema format](https://docs.foxglove.dev/docs/getting-started/custom/custom-schema-encodings).
 
+
+
+### Shared descriptor file
+
+For publishers that do not expose a descriptor queryable, provide one shared descriptor set containing all message types.  
+
 Generate a descriptor with:
 
 ```sh
 protoc --include_imports --descriptor_set_out=descriptor.bin --proto_path=. your_message.proto
 ```
 
-### Shared descriptor file
-
-For publishers that do not expose a descriptor queryable, provide one shared descriptor set containing all message types:
+Run with the descriptor file:
 
 ```sh
 ./target/release/zenoh-foxglove-bridge --descriptor-file /path/to/descriptor.bin
