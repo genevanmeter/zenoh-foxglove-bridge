@@ -120,7 +120,13 @@ Missing, malformed, or ambiguous queried descriptors generate a warning and are 
 
 ## Supported payloads
 
-Zenoh `application/json` and `text/json` messages are forwarded as JSON channels with a permissive object schema. The schema name comes from the encoding metadata when provided and defaults to `json`. Messages with the `foxglove.RawImage` schema name use the built-in image schema for rendering in Image panels. Invalid JSON and non-object JSON values are dropped. UTF-8 `text/plain` payloads use the schema name `text` and are exposed as JSON objects whose `data` field is the original string; invalid UTF-8 text is dropped. `application/protobuf` messages (and topics listed in `message_types`) use Protobuf descriptor discovery. All other encodings, including Zenoh's default byte encoding, are exposed as `Zenoh.RawBytes` JSON envelopes with an `encoding` string, a `data` array containing the exact payload bytes, and a lowercase `hex` string for convenient display in Lichtblick or Foxglove's Raw Messages panel.
+| Data type | Zenoh encoding | Viewer representation | Requirements and behavior |
+| --- | --- | --- | --- |
+| Protobuf | `application/protobuf`, or any topic listed in `message_types` | Protobuf channel with the original message bytes and the selected message schema | Requires a binary `FileDescriptorSet` from a descriptor queryable or shared descriptor file. See [Protobuf support](#protobuf-support). |
+| JSON object | `application/json` or `text/json` | JSON channel with a permissive object schema | Schema name comes from encoding metadata and defaults to `json`. Invalid JSON and non-object values are dropped. |
+| Raw image (JSON) | `application/json` or `text/json` with schema name `foxglove.RawImage` | JSON channel with the built-in `foxglove.RawImage` schema for Image panels | Payload must follow the image schema. See [Image rendering](#image-rendering) for JSON and Protobuf examples. |
+| Plain text | `text/plain` | JSON object with the original string in `data`; schema name `text` | Requires valid UTF-8; invalid UTF-8 payloads are dropped. |
+| Raw bytes | All other encodings, including Zenoh's default byte encoding | `Zenoh.RawBytes` JSON envelope with an `encoding` string, a `data` byte array, and a lowercase `hex` string | Preserves the exact payload bytes for inspection in a Raw Messages panel. |
 
 ## Configuration and resource limits
 
